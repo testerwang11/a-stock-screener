@@ -194,6 +194,95 @@ class AStockDataCollector:
         print("  所有业绩数据源均失败")
         return pd.DataFrame()
 
+    def get_financial_quality_data(self, stock_codes):
+        """获取财务质量数据 - 包括扣非净利润、现金流等"""
+        print(f"  获取 {len(stock_codes)} 只股票的财务质量数据...")
+
+        quality_data = []
+
+        # 按批次处理，避免请求过于频繁
+        batch_size = 50
+        for i in range(0, len(stock_codes), batch_size):
+            batch_codes = stock_codes[i:i + batch_size]
+            codes_str = ','.join([f"'{code}'" for code in batch_codes])
+
+            api_url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+            try:
+                # 获取更多财务指标
+                params = {
+                    'reportName': 'RPT_DUP_FCI_PERFORMANCE_EVALUATION',
+                    'columns': 'SECURITY_CODE,SECURITY_NAME_ABBR,PARENT_NETPROFIT,YOY_PROFIT,GROSS_INCOME,YOY_SALES,FROM_EQUITY_INVESTMENTS,FROM_FIXED_ASSETS,FROM_INTANGIBLE_ASSETS,CF_OPERA,CF_INVEST,CF_FINANCE,CASH_EQUIV_ADDITIONS',
+                    'filter': f'(REPORT_TYPE="1")',
+                    'pageNumber': '1',
+                    'pageSize': '1000',
+                    'sortColumns': 'UPDATE_DATE',
+                    'sortTypes': '-1'
+                }
+
+                resp = self.session.get(api_url, params=params, timeout=30)
+                data = resp.json()
+
+                if data.get('success') and data.get('result'):
+                    items = data['result'].get('data', [])
+
+                    for item in items:
+                        code = item.get('SECURITY_CODE')
+                        if code in batch_codes:
+                            quality_data.append({
+                                '代码': code,
+                                '营业收入': item.get('GROSS_INCOME'),
+                                '营业收入同比增长率': item.get('YOY_SALES'),
+                                '经营活动现金流': item.get('CF_OPERA'),
+                                '投资活动现金流': item.get('CF_INVEST'),
+                                '筹资活动现金流': item.get('CF_FINANCE'),
+                                '现金及等价物净增加': item.get('CASH_EQUIV_ADDITIONS')
+                            })
+
+            except Exception as e:
+                print(f"    获取财务质量数据失败: {e}")
+
+        return pd.DataFrame(quality_data) if quality_data else pd.DataFrame()
+
+    def get_valuation_data(self, stock_codes):
+        """获取估值数据"""
+        print(f"  获取 {len(stock_codes)} 只股票的估值数据...")
+
+        valuation_data = []
+
+        # 通过API获取市盈率、市净率等数据
+        for code in stock_codes:
+            try:
+                # 根据股票代码确定市场
+                market = '1' if code.startswith(('60', '688', '689')) else '0'
+                secid = f"{market}.{code}"
+
+                # 获取实时数据来计算估值指标
+                url = f"https://push2.eastmoney.com/api/qt/ulist.np/get"
+                params = {
+                    'fltt': '2',
+                    'invt': '2',
+                    'fields': 'f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25',
+                    'secids': secid
+                }
+
+                resp = self.session.get(url, params=params, timeout=30)
+                data = resp.json()
+
+                if data.get('data') and data['data'].get('diff'):
+                    stock_info = data['data']['diff'][0]
+                    valuation_data.append({
+                        '代码': code,
+                        '市盈率': self._safe_float(stock_info.get('f9')),  # 动态市盈率
+                        '市净率': self._safe_float(stock_info.get('f8')),  # 市净率
+                        '市销率': self._safe_float(stock_info.get('f22')),  # 市销率
+                        '总市值': self._safe_float(stock_info.get('f20')),
+                        '流通市值': self._safe_float(stock_info.get('f21'))
+                    })
+            except Exception as e:
+                print(f"    获取 {code} 估值数据失败: {e}")
+
+        return pd.DataFrame(valuation_data) if valuation_data else pd.DataFrame()
+
     def _fetch_profit_from(self, api_url, report_date):
         """从指定API获取某个报告期的业绩数据"""
         all_records = []
@@ -305,7 +394,7 @@ class AStockDataCollector:
     # ─── 筛选主流程 ──────────────────────────────────
 
     def screen_stocks(self):
-        """筛选：市值倒数100名中，归母净利润增速前30"""
+        """筛选：市值倒数100名中，综合质量评分前30"""
         print("=" * 50)
         print("开始筛选股票...")
         print("=" * 50)
@@ -318,10 +407,10 @@ class AStockDataCollector:
             return pd.DataFrame()
         print(f"  共 {len(all_stocks)} 只股票")
 
-        # 2. 市值倒数100
-        print("\n2. 筛选市值最小的100只股票...")
+        # 2. 市值倒数1000（扩大筛选范围以进行更全面分析）
+        print("\n2. 筛选市值最小的1000只股票...")
         all_stocks = all_stocks.sort_values('总市值', ascending=True)
-        small_cap = all_stocks.head(100).copy()
+        small_cap = all_stocks.head(1000).copy()
         print(f"  筛选出 {len(small_cap)} 只小市值股票")
         print(f"  市值范围: {small_cap['总市值'].min()/1e8:.2f}亿 "
               f"~ {small_cap['总市值'].max()/1e8:.2f}亿")
@@ -336,10 +425,10 @@ class AStockDataCollector:
             print("  降级方案：返回市值最小的30只股票")
             return small_cap.head(30)
 
-        # 4. 合并
-        print("\n4. 合并数据并筛选...")
+        # 4. 合并基础数据
+        print("\n4. 合并基础数据...")
         merged = small_cap.merge(profit_df, on='代码', how='inner')
-        print(f"  匹配到 {len(merged)} 只有业绩数据的小市值股票")
+        print(f"  匹配合并后有 {len(merged)} 只股票")
 
         if merged.empty:
             print("  没有匹配到任何数据")
@@ -348,17 +437,242 @@ class AStockDataCollector:
             merged['净利润同比增长率'] = merged['净利润同比增长率'].fillna(0)
             print(f"  降级方案：保留全部 {len(merged)} 只，增速缺失按0处理")
 
-        # 5. 取前30
-        top30 = merged.sort_values('净利润同比增长率', ascending=False).head(30)
+        # 5. 获取更多财务质量数据
+        print("\n5. 获取财务质量与估值数据...")
+        stock_codes = merged['代码'].tolist()
+
+        # 获取财务质量数据
+        quality_df = self.get_financial_quality_data(stock_codes)
+        if not quality_df.empty:
+            merged = merged.merge(quality_df, on='代码', how='left')
+            print(f"  财务质量数据合并完成")
+
+        # 获取估值数据
+        valuation_df = self.get_valuation_data(stock_codes)
+        if not valuation_df.empty:
+            merged = merged.merge(valuation_df, on='代码', how='left')
+            print(f"  估值数据合并完成")
+
+        # 6. 计算综合评分
+        print("\n6. 计算综合评分并筛选...")
+        scored_stocks = self.calculate_comprehensive_score(merged)
+
+        # 7. 风险评估
+        print("\n7. 进行风险评估...")
+        risk_indicators = self.risk_assessment(scored_stocks)
+
+        # 输出风险较高的股票
+        high_risk_stocks = [r for r in risk_indicators if r['风险等级'] == '高']
+        if high_risk_stocks:
+            print(f"  发现 {len(high_risk_stocks)} 只高风险股票:")
+            for risk in high_risk_stocks[:5]:  # 只显示前5个
+                print(f"    {risk['代码']}: {', '.join(risk['风险因素'])}")
+
+        # 过滤高风险股票（可选）
+        filtered_stocks = scored_stocks.copy()
+        high_risk_codes = [r['代码'] for r in risk_indicators if r['风险等级'] == '高']
+        if high_risk_codes:
+            filtered_stocks = filtered_stocks[~filtered_stocks['代码'].isin(high_risk_codes)]
+            print(f"  过滤高风险股票后剩余 {len(filtered_stocks)} 只")
+
+        # 按综合评分排序，取前30
+        top30 = filtered_stocks.nlargest(30, '综合评分')
 
         print(f"\n最终筛选出 {len(top30)} 只股票")
         print("\n前10只股票预览:")
-        preview = top30[['代码', '名称', '总市值', '净利润同比增长率']].head(10).copy()
-        preview['总市值'] = (preview['总市值'] / 1e8).round(2)
-        preview.columns = ['代码', '名称', '总市值(亿)', '净利润增速(%)']
-        print(preview.to_string(index=False))
+        preview_cols = ['代码', '名称', '总市值', '净利润同比增长率', '综合评分']
+        # 检查列是否存在
+        available_cols = [col for col in preview_cols if col in top30.columns]
+        if available_cols:
+            preview = top30[available_cols].head(10).copy()
+            if '总市值' in preview.columns:
+                preview['总市值'] = (preview['总市值'] / 1e8).round(2)
+            # 重命名列时也检查是否存在
+            rename_mapping = {}
+            if '总市值' in preview.columns:
+                rename_mapping['总市值'] = '总市值(亿)'
+            if '净利润同比增长率' in preview.columns:
+                rename_mapping['净利润同比增长率'] = '净利润增速(%)'
+            if '综合评分' in preview.columns:
+                rename_mapping['综合评分'] = '综合评分'
+
+            if rename_mapping:
+                preview = preview.rename(columns=rename_mapping)
+            print(preview.to_string(index=False))
+        else:
+            print("可用列:", list(top30.columns))
+            # 显示前几行的所有数据作为备用
+            print(top30.head(5))
 
         return top30
+
+    def calculate_comprehensive_score(self, stocks_df):
+        """计算综合评分"""
+        if stocks_df.empty:
+            return stocks_df
+
+        scores = []
+        detailed_scores = []  # 添加详细评分记录用于调试
+
+        for idx, stock in stocks_df.iterrows():
+            # 初始化各项得分
+            growth_score = 0
+            health_score = 0
+            valuation_score = 0
+            sustainability_score = 0
+
+            # 1. 增长质量评分 (40分)
+            profit_growth = stock.get('净利润同比增长率', 0)
+
+            # 增长合理性评分 (避免过高增长)
+            if 20 <= profit_growth <= 150:  # 适度增长更可持续
+                growth_score = 40
+            elif 150 < profit_growth <= 300:
+                growth_score = 35
+            elif profit_growth > 300:
+                growth_score = 20  # 过高增长可能存在风险
+            elif 0 < profit_growth < 20:
+                growth_score = 30
+            elif profit_growth <= 0:
+                growth_score = max(0, 10 + profit_growth / 10)  # 负增长适当扣分
+            else:
+                growth_score = 0  # 默认0分
+
+            # 2. 财务健康度评分 (30分)
+            pb = stock.get('市净率', 5.0)  # 如果没有数据，默认5.0
+            # 简化处理：如果PB过低(如小于0.1)或过高(大于10)则扣分
+            if pb < 0.1:
+                health_score = 5  # PB过低可能有财务问题
+            elif 0.1 <= pb <= 3.0:
+                health_score = 25  # 合理区间
+            elif 3.0 < pb <= 5.0:
+                health_score = 20  # 略高但可接受
+            elif 5.0 < pb <= 10.0:
+                health_score = 15  # 较高
+            else:
+                health_score = max(0, 30 - (pb - 10) * 2)  # 过高则扣分
+
+            # 3. 估值合理性评分 (20分)
+            pe = stock.get('市盈率', 100)  # 如果没有则默认100
+            if pe <= 0:  # 亏损公司
+                valuation_score = 0
+            elif pe <= 15:
+                valuation_score = 20
+            elif pe <= 20:
+                valuation_score = 18
+            elif pe <= 25:
+                valuation_score = 16
+            elif pe <= 30:
+                valuation_score = 14
+            elif pe <= 40:
+                valuation_score = 12
+            elif pe <= 60:
+                valuation_score = 8
+            else:
+                valuation_score = max(0, 8 - (pe - 60) / 10)
+
+            # 4. 成长可持续性评分 (10分)
+            revenue_growth = stock.get('营业收入同比增长率', 0)
+            if 10 <= revenue_growth <= 100:
+                sustainability_score = 10
+            elif 0 <= revenue_growth < 10:
+                sustainability_score = 7
+            elif revenue_growth > 100:
+                sustainability_score = 5  # 营收增长过高也可能是暂时的
+            else:
+                sustainability_score = max(0, 5 + revenue_growth / 10)
+
+            # 计算总分 (权重可根据策略调整)
+            total_score = (
+                growth_score * 0.4 +      # 增长质量 40%
+                health_score * 0.3 +      # 财务健康 30%
+                valuation_score * 0.2 +   # 估值合理性 20%
+                sustainability_score * 0.1 # 可持续性 10%
+            )
+
+            scores.append(total_score)
+
+            # 记录详细评分用于调试
+            detailed_scores.append({
+                '代码': stock.get('代码', ''),
+                '增长率': profit_growth,
+                '增长得分': growth_score,
+                'PB': pb,
+                '健康得分': health_score,
+                'PE': pe,
+                '估值得分': valuation_score,
+                '营收增长率': revenue_growth,
+                '可持续得分': sustainability_score,
+                '总分': total_score
+            })
+
+        stocks_df['综合评分'] = scores
+
+        # 输出前几只股票的评分明细，便于分析
+        print("\n前5只股票评分明细:")
+        for detail in detailed_scores[:5]:
+            print(f"  {detail['代码']}: 总分{detail['总分']:.1f} "
+                  f"(增长{detail['增长得分']:.1f}, 健康{detail['健康得分']:.1f}, "
+                  f"估值{detail['估值得分']:.1f}, 可持续{detail['可持续得分']:.1f})")
+
+        return stocks_df.sort_values('综合评分', ascending=False)
+
+    def risk_assessment(self, stock_data):
+        """风险评估"""
+        risk_indicators = []
+
+        for idx, stock in stock_data.iterrows():
+            risk_level = "低"
+            risk_factors = []
+
+            # 1. 增长率波动风险
+            profit_growth = stock.get('净利润同比增长率', 0)
+            if profit_growth > 500:
+                risk_factors.append(f"增长率异常高({profit_growth:.2f}%),存在回归风险")
+                risk_level = "高"
+            elif 100 < profit_growth <= 500:
+                risk_factors.append(f"增长率较高({profit_growth:.2f}%),关注可持续性")
+                if risk_level != "高":
+                    risk_level = "中"
+            elif profit_growth < -50:
+                risk_factors.append(f"净利润大幅下滑({profit_growth:.2f}%)")
+                risk_level = "高"
+            elif profit_growth < 0:
+                risk_factors.append(f"净利润负增长({profit_growth:.2f}%)")
+                if risk_level != "高":
+                    risk_level = "中"
+
+            # 2. 估值风险
+            pe = stock.get('市盈率', 100)
+            if pe > 100:
+                risk_factors.append(f"市盈率过高({pe:.2f}倍)")
+                risk_level = "高"
+            elif pe < 0:  # 亏损
+                risk_factors.append(f"市盈率为负({pe:.2f}),公司亏损")
+                if risk_level != "高":
+                    risk_level = "中"
+
+            # 3. 规模风险
+            market_cap = stock.get('总市值', 0)
+            if market_cap < 500000000:  # 5亿以下
+                risk_factors.append("市值过小(<5亿)，流动性风险")
+                if risk_level == "低":
+                    risk_level = "中"
+
+            # 4. 财务风险 (如果获得更多信息)
+            pb = stock.get('市净率', 10)
+            if pb > 10:
+                risk_factors.append(f"市净率过高({pb:.2f})")
+                if risk_level != "高":
+                    risk_level = "中"
+
+            risk_indicators.append({
+                '代码': stock.get('代码', ''),
+                '风险等级': risk_level,
+                '风险因素': risk_factors
+            })
+
+        return risk_indicators
 
     # ─── 保存结果 ────────────────────────────────────
 
@@ -366,18 +680,39 @@ class AStockDataCollector:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         csv_path = os.path.join(self.data_dir, f'screening_result_{timestamp}.csv')
-        stocks_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        # 保存包含综合评分的结果
+        columns_to_save = [col for col in stocks_df.columns if col not in ['Unnamed: 0'] if not col.startswith('_')]
+        stocks_df[columns_to_save].to_csv(csv_path, index=False, encoding='utf-8-sig')
 
         json_path = os.path.join(self.data_dir, 'latest_screening_result.json')
-        stocks_df.to_json(json_path, orient='records', force_ascii=False, indent=2)
+        # 将DataFrame转换为字典列表时处理特殊值
+        records = []
+        for _, row in stocks_df.iterrows():
+            record = {}
+            for col in stocks_df.columns:
+                val = row[col]
+                if pd.isna(val):
+                    val = None
+                elif isinstance(val, (pd.Int64Dtype, pd.Int32Dtype)):
+                    val = int(val) if not pd.isna(val) else None
+                elif isinstance(val, (int, float)):
+                    if pd.isna(val):
+                        val = None
+                    else:
+                        val = float(val) if isinstance(val, float) else int(val)
+                record[col] = val
+            records.append(record)
+
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
 
         latest_csv = os.path.join(self.data_dir, 'latest_screening_result.csv')
-        stocks_df.to_csv(latest_csv, index=False, encoding='utf-8-sig')
+        stocks_df[columns_to_save].to_csv(latest_csv, index=False, encoding='utf-8-sig')
 
         root_json = os.path.join(os.path.dirname(__file__), 'screening_result.json')
         with open(root_json, 'w', encoding='utf-8') as f:
             json.dump({
-                'stocks': stocks_df.to_dict('records'),
+                'stocks': records,
                 'timestamp': datetime.now().isoformat(),
                 'count': len(stocks_df),
             }, f, ensure_ascii=False, indent=2)

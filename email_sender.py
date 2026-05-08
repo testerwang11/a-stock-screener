@@ -21,15 +21,15 @@ class EmailSender:
     
     def __init__(self):
         # 163邮箱配置
-        self.smtp_server = "smtp.163.com"
+        self.smtp_server = "smtp.yeah.net"
         self.smtp_port = 465  # SSL端口
-        self.sender_email = "zhoulang0411@163.com"
-        self.sender_password = "ZNcg9FLhtZASH6sh"  # 邮箱授权码
-        self.receiver_email = "zhoulang0411@163.com"
+        self.sender_email = "firmlybelieve@yeah.net"
+        self.sender_password = "JGSuBLyhvYPZzxaN"  # 邮箱授权码
+        self.receiver_email = "firmlybelieve@yeah.net"
     
     def create_email_content(self, stocks_data, timestamp):
         """创建邮件内容"""
-        
+
         # HTML邮件模板
         html_content = f"""
         <!DOCTYPE html>
@@ -48,17 +48,18 @@ class EmailSender:
                 tr:hover {{ background-color: #f1f1f1; }}
                 .positive {{ color: #28a745; font-weight: bold; }}
                 .negative {{ color: #dc3545; font-weight: bold; }}
+                .score {{ background-color: #e7f3ff; font-weight: bold; color: #007bff; }}
                 .footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; color: #999; font-size: 12px; }}
             </style>
         </head>
         <body>
             <h1>📊 A股小市值股票筛选报告</h1>
             <p class="info">生成时间: {timestamp}</p>
-            <p class="info">筛选条件: 市值倒数100名中，归母净利润增速前30</p>
-            
+            <p class="info">筛选条件: 基于综合评分(增长质量40%+财务健康30%+估值合理20%+成长可持续10%)前30名</p>
+
             <h2>📈 筛选结果概览</h2>
             <p>共筛选出 <strong>{len(stocks_data)}</strong> 只股票</p>
-            
+
             <table>
                 <thead>
                     <tr>
@@ -70,58 +71,77 @@ class EmailSender:
                         <th>总市值(亿)</th>
                         <th>流通市值(亿)</th>
                         <th>净利润增速</th>
+                        <th>综合评分</th>
                         <th>成交额(万)</th>
                     </tr>
                 </thead>
                 <tbody>
         """
-        
+
         # 添加股票数据行
         for idx, stock in enumerate(stocks_data, 1):
             # 格式化数值
             latest_price = stock.get('最新价', 'N/A')
             change_pct = stock.get('涨跌幅', 'N/A')
-            total_cap = stock.get('总市值', 0)
-            float_cap = stock.get('流通市值', 0)
+            total_cap = stock.get('总市值_x', 0) or stock.get('总市值', 0)  # 处理合并后可能存在的重复字段
+            float_cap = stock.get('流通市值_x', 0) or stock.get('流通市值', 0)  # 处理合并后可能存在的重复字段
             profit_growth = stock.get('净利润同比增长率', 'N/A')
             turnover = stock.get('成交额', 0)
-            
-            # 格式化市值（转换为亿）
-            total_cap_yi = total_cap / 100000000 if total_cap else 0
-            float_cap_yi = float_cap / 100000000 if float_cap else 0
+            score = stock.get('综合评分', 'N/A')
+
+            # 格式化市值（转换为亿），并处理空值
+            total_cap_yi = 0
+            float_cap_yi = 0
+
+            if total_cap is not None and total_cap != 0 and not pd.isna(total_cap):
+                total_cap_yi = total_cap / 100000000
+            else:
+                total_cap_yi = 0  # 如果值为空或0，则显示为0
+
+            if float_cap is not None and float_cap != 0 and not pd.isna(float_cap):
+                float_cap_yi = float_cap / 100000000
+            else:
+                float_cap_yi = 0  # 如果值为空或0，则显示为0
+
             turnover_wan = turnover / 10000 if turnover else 0
-            
+            score_display = f"{score:.1f}" if isinstance(score, (int, float)) else score
+
             # 涨跌幅颜色
-            change_class = "positive" if change_pct and float(change_pct) > 0 else "negative" if change_pct and float(change_pct) < 0 else ""
-            growth_class = "positive" if profit_growth and float(profit_growth) > 0 else "negative" if profit_growth and float(profit_growth) < 0 else ""
-            
+            change_class = "positive" if change_pct and float(str(change_pct).replace('%', '')) > 0 else "negative" if change_pct and float(str(change_pct).replace('%', '')) < 0 else ""
+            growth_class = "positive" if profit_growth and float(str(profit_growth).replace('%', '')) > 0 else "negative" if profit_growth and float(str(profit_growth).replace('%', '')) < 0 else ""
+
+            # 为综合评分设置样式
+            score_class = "score"
+
             html_content += f"""
                     <tr>
                         <td>{idx}</td>
                         <td>{stock.get('代码', 'N/A')}</td>
                         <td><strong>{stock.get('名称', 'N/A')}</strong></td>
-                        <td>{latest_price}</td>
-                        <td class="{change_class}">{change_pct}%</td>
+                        <td>{latest_price if latest_price != 'N/A' else '-'}</td>
+                        <td class="{change_class}">{change_pct if change_pct != 'N/A' else '-'}%</td>
                         <td>{total_cap_yi:.2f}</td>
                         <td>{float_cap_yi:.2f}</td>
-                        <td class="{growth_class}">{profit_growth}%</td>
+                        <td class="{growth_class}">{profit_growth if profit_growth != 'N/A' else '-'}%</td>
+                        <td class="{score_class}">{score_display}</td>
                         <td>{turnover_wan:.2f}</td>
                     </tr>
             """
-        
+
         html_content += f"""
                 </tbody>
             </table>
-            
+
             <div class="footer">
                 <p>本报告由A股小市值股票筛选系统自动生成</p>
+                <p>筛选规则: 从A股所有股票中筛选市值倒数1000名，然后按综合评分(增长质量+财务健康+估值合理+成长可持续)排序，取前30名</p>
                 <p>访问Web界面查看详细K线图: <a href="https://a-stock-screener.vercel.app">点击查看</a></p>
                 <p>免责声明：本报告仅供参考，不构成投资建议。投资有风险，入市需谨慎。</p>
             </div>
         </body>
         </html>
         """
-        
+
         return html_content
     
     def send_screening_result(self, stocks_data, attachment_path=None):

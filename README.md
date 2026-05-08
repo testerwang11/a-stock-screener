@@ -79,14 +79,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 #### 2.1 准备工作
 
 1. 注册 [Vercel](https://vercel.com) 账号
-2. 安装 Vercel CLI：
-   ```bash
-   npm install -g vercel
-   ```
-3. 登录Vercel：
-   ```bash
-   vercel login
-   ```
+2. 安装 [Node.js](https://nodejs.org)（已安装可跳过）
 
 #### 2.2 部署命令
 
@@ -94,8 +87,9 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 # 进入项目目录
 cd a_stock_screener
 
-# 使用Vercel部署
-vercel --prod
+# 使用npx运行Vercel（无需全局安装）
+npx vercel login
+npx vercel --prod
 ```
 
 #### 2.3 配置环境变量（可选）

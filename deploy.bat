@@ -71,10 +71,12 @@ goto menu
 echo.
 echo 🚀 开始部署到Vercel...
 
-vercel --version >nul 2>&1
+echo 检查Node.js是否安装...
+node --version >nul 2>&1
 if errorlevel 1 (
-    echo 正在安装Vercel CLI...
-    npm install -g vercel
+    echo ❌ 未找到Node.js，请先安装Node.js
+    pause
+    goto menu
 )
 
 echo.
@@ -85,10 +87,10 @@ set /p deploy_choice=请选择 [1-2]:
 
 if "%deploy_choice%"=="2" (
     echo 🚀 执行生产部署...
-    vercel --prod
+    npx vercel --prod
 ) else (
     echo 🚀 执行预览部署...
-    vercel
+    npx vercel
 )
 
 echo.
